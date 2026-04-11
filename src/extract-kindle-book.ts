@@ -303,13 +303,17 @@ async function main() {
 
   async function updateSettings() {
     console.log('Looking for Reader settings button')
+    // Move the mouse to the top of the viewport to reveal the top chrome.
+    await page.mouse.move(640, 5)
+    await delay(400)
+    await ensureFixedHeaderUI()
     const settingsButton = page
       .locator(
         'ion-button[aria-label="Reader settings"], ' +
           'button[aria-label="Reader settings"]'
       )
       .first()
-    await settingsButton.waitFor({ timeout: 30_000 })
+    await settingsButton.waitFor({ state: 'visible', timeout: 30_000 })
     console.log('Clicking Reader settings')
     await settingsButton.click()
     await delay(500)
@@ -318,6 +322,9 @@ async function main() {
     // My hypothesis is that this font will be easier for OCR to transcribe...
     // TODO: evaluate different fonts & settings
     console.log('Changing font to Amazon Ember')
+    await page
+      .locator('#AmazonEmber')
+      .waitFor({ state: 'visible', timeout: 10_000 })
     await page.locator('#AmazonEmber').click()
     await delay(200)
 
@@ -333,23 +340,48 @@ async function main() {
     console.log('Closing settings')
     await settingsButton.click()
     await delay(500)
+
+    // Wait for the reader to re-render after settings change
+    await page
+      .waitForSelector(krRendererMainImageSelector, { timeout: 30_000 })
+      .catch(() => {
+        console.warn(
+          'Reader did not re-render after settings change, continuing...'
+        )
+      })
+    await delay(300)
+  }
+
+  async function showTopChrome() {
+    // Kindle auto-hides the top chrome via CSS transform/opacity.
+    // Moving the mouse to the top of the viewport (where the chrome lives)
+    // triggers it to appear; then we lock its transform so it stays visible.
+    await page.mouse.move(640, 5)
+    await delay(400)
+    await ensureFixedHeaderUI()
   }
 
   async function goToPage(pageNumber: number) {
-    await page.locator('#reader-header').hover({ force: true })
-    await delay(200)
-    await page.locator('ion-button[aria-label="Reader menu"]').click()
+    await showTopChrome()
+    // Use force:true because Kindle's top-chrome may still be mid-animation
+    await page
+      .locator('ion-button[aria-label="Reader menu"]')
+      .first()
+      .click({ force: true })
     await delay(500)
-    await page
-      .locator('ion-item[role="listitem"]', { hasText: 'Go to Page' })
-      .click()
-    await page
-      .locator('ion-modal input[placeholder="page number"]')
-      .fill(`${pageNumber}`)
+    const goToPageItem = page.locator('ion-item[role="listitem"]', {
+      hasText: 'Go to Page'
+    })
+    await goToPageItem.waitFor({ state: 'attached', timeout: 10_000 })
+    await goToPageItem.click({ force: true })
+    const pageInput = page.locator('ion-modal input[placeholder="page number"]')
+    await pageInput.waitFor({ state: 'attached', timeout: 10_000 })
+    await delay(200)
+    await pageInput.fill(`${pageNumber}`)
     // await page.locator('ion-modal button', { hasText: 'Go' }).click()
     await page
       .locator('ion-modal ion-button[item-i-d="go-to-modal-go-button"]')
-      .click()
+      .click({ force: true })
     await delay(500)
   }
 
@@ -362,9 +394,16 @@ async function main() {
   }
 
   async function ensureFixedHeaderUI() {
+    // Wait for the element to be in the DOM (not necessarily visible, since
+    // Kindle hides it via transform/opacity rather than display:none).
+    await page
+      .locator('.top-chrome')
+      .waitFor({ state: 'attached', timeout: 15_000 })
     await page.locator('.top-chrome').evaluate((el) => {
       el.style.transition = 'none'
+      el.style.opacity = '1'
       el.style.transform = 'none'
+      el.style.visibility = 'visible'
     })
   }
 
@@ -423,7 +462,6 @@ async function main() {
   }
 
   await dismissPossibleAlert()
-  await ensureFixedHeaderUI()
   await updateSettings()
 
   console.log('Waiting for book reader to load...')
@@ -434,6 +472,7 @@ async function main() {
         'Main reader content may not have loaded, continuing anyway...'
       )
     })
+  await ensureFixedHeaderUI()
 
   // Record the initial page navigation so we can reset back to it later
   const initialPageNav = await getPageNav()
